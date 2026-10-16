@@ -19,6 +19,8 @@
 #include "TypeConverter.h"
 #include "PolicyAudioPort.h"
 #include "HwModule.h"
+#include <audio_utils/audio_channel_mask_utils.h>
+#include <audio_utils/audio_pcm_format_utils.h>
 #include <policy.h>
 #include <system/audio.h>
 
@@ -136,6 +138,11 @@ void PolicyAudioPort::pickChannelMask(audio_channel_mask_t &pickedChannelMask,
         if (asAudioPort()->getType() != AUDIO_PORT_TYPE_MIX) {
             maxCount = UINT_MAX;
         }
+        // Only output mixer ports actually go through AudioFlinger's mixer, so
+        // only for those does mixer compatibility matter when breaking ties
+        // between candidates of the same channel count.
+        const bool isMixerOutputPort = !asAudioPort()->useInputChannelMask()
+                && asAudioPort()->getType() == AUDIO_PORT_TYPE_MIX;
         for (const auto channelMask : channelMasks) {
             uint32_t cnlCount;
             if (asAudioPort()->useInputChannelMask()) {
@@ -143,23 +150,25 @@ void PolicyAudioPort::pickChannelMask(audio_channel_mask_t &pickedChannelMask,
             } else {
                 cnlCount = audio_channel_count_from_out_mask(channelMask);
             }
-            if ((cnlCount > channelCount) && (cnlCount <= maxCount)) {
+            if (cnlCount > maxCount) {
+                continue;
+            }
+            if (cnlCount > channelCount) {
                 pickedChannelMask = channelMask;
                 channelCount = cnlCount;
+            } else if (cnlCount == channelCount && isMixerOutputPort
+                    && !audio_utils::isMixerCompatibleChannelMask(
+                            pickedChannelMask, FCC_2, maxCount)
+                    && audio_utils::isMixerCompatibleChannelMask(
+                            channelMask, FCC_2, maxCount)) {
+                // Prefer the candidate the mixer will actually accept, e.g. an
+                // INDEX mask over a non-canonical POSITION mask advertising the
+                // same channel count (seen on some USB devices).
+                pickedChannelMask = channelMask;
             }
         }
     }
 }
-
-/* format in order of increasing preference */
-const audio_format_t PolicyAudioPort::sPcmFormatCompareTable[] = {
-        AUDIO_FORMAT_DEFAULT,
-        AUDIO_FORMAT_PCM_16_BIT,
-        AUDIO_FORMAT_PCM_8_24_BIT,
-        AUDIO_FORMAT_PCM_24_BIT_PACKED,
-        AUDIO_FORMAT_PCM_32_BIT,
-        AUDIO_FORMAT_PCM_FLOAT,
-};
 
 int PolicyAudioPort::compareFormats(audio_format_t format1, audio_format_t format2)
 {
@@ -175,19 +184,9 @@ int PolicyAudioPort::compareFormats(audio_format_t format1, audio_format_t forma
         return -1;
     }
 
-    int index1 = -1, index2 = -1;
-    for (size_t i = 0;
-            (i < ARRAY_SIZE(sPcmFormatCompareTable)) && ((index1 == -1) || (index2 == -1));
-            i ++) {
-        if (sPcmFormatCompareTable[i] == format1) {
-            index1 = i;
-        }
-        if (sPcmFormatCompareTable[i] == format2) {
-            index2 = i;
-        }
-    }
-    // format1 not found => index1 < 0 => format2 > format1
-    // format2 not found => index2 < 0 => format2 < format1
+    // format not found => index < 0 => treated as worse than any found format
+    const int index1 = audio_utils::pcmFormatRankIndex(format1);
+    const int index2 = audio_utils::pcmFormatRankIndex(format2);
     return index1 - index2;
 }
 
@@ -224,7 +223,8 @@ void PolicyAudioPort::pickAudioProfile(uint32_t &samplingRate,
     if (!asAudioPort()->hasValidAudioProfile()) {
         return;
     }
-    audio_format_t bestFormat = sPcmFormatCompareTable[ARRAY_SIZE(sPcmFormatCompareTable) - 1];
+    audio_format_t bestFormat = audio_utils::pcmBestSinkFormat();
+
     // For mixed output and inputs, use best mixer output format.
     // Do not limit format otherwise
     if ((asAudioPort()->getType() != AUDIO_PORT_TYPE_MIX) || asAudioPort()->isDirectOutput()) {

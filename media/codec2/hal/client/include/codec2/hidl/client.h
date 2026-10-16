@@ -235,6 +235,17 @@ struct Codec2Client : public Codec2ConfigurableClient {
 
     std::shared_ptr<C2ParamReflector> getParamReflector();
 
+    /**
+     * Batch version of getParamReflector()->describe(). Fetches struct
+     * descriptors for multiple core indices in a single getStructDescriptors
+     * binder call, instead of one binder call per index.
+     *
+     * \param coreIndices vector of core indices to describe
+     * \return map from core index to struct descriptor
+     */
+    std::map<uint32_t, std::unique_ptr<C2StructDescriptor>> describeStructs(
+            const std::vector<uint32_t>& coreIndices);
+
     // Returns the list of IComponentStore service names that are available on
     // the device. This list is specified at the build time in manifest files.
     // Note: A software service will have "_software" as a suffix.

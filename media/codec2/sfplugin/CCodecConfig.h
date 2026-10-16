@@ -157,7 +157,8 @@ struct CCodecConfig {
     /// indices.
     status_t initialize(
             const std::shared_ptr<C2ParamReflector> &client,
-            const std::shared_ptr<Codec2Client::Configurable> &configurable);
+            const std::shared_ptr<Codec2Client::Configurable> &configurable,
+            Codec2Client *codec2Client = nullptr);
 
     /**
      * Adds a locally maintained parameter. This is used for output configuration that can be

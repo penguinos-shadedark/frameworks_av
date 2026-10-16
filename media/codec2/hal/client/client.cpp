@@ -2755,6 +2755,70 @@ std::shared_ptr<C2ParamReflector> Codec2Client::getParamReflector() {
     return std::make_shared<HidlSimpleParamReflector>(mHidlBase1_0);
 };
 
+std::map<uint32_t, std::unique_ptr<C2StructDescriptor>> Codec2Client::describeStructs(
+        const std::vector<uint32_t>& coreIndices) {
+    std::map<uint32_t, std::unique_ptr<C2StructDescriptor>> result;
+    if (coreIndices.empty()) {
+        return result;
+    }
+
+    if (mAidlBase) {
+        std::vector<int32_t> indices;
+        indices.reserve(coreIndices.size());
+        for (uint32_t index : coreIndices) {
+            indices.push_back(static_cast<int32_t>(index));
+        }
+        std::vector<c2_aidl::StructDescriptor> aidlDescs;
+        ::ndk::ScopedAStatus transStatus = mAidlBase->getStructDescriptors(indices, &aidlDescs);
+        if (!transStatus.isOk() && transStatus.getExceptionCode() != EX_SERVICE_SPECIFIC) {
+            LOG(DEBUG) << "describeStructs -- AIDL transaction failed: "
+                       << transStatus.getDescription();
+            return result;
+        }
+        for (const auto& aidlDesc : aidlDescs) {
+            std::unique_ptr<C2StructDescriptor> descriptor;
+            if (c2_aidl::utils::FromAidl(&descriptor, aidlDesc)) {
+                result.emplace(
+                        C2Param::CoreIndex(descriptor->coreIndex()).coreIndex(),
+                        std::move(descriptor));
+            } else {
+                LOG(ERROR) << "describeStructs -- AIDL conversion failed for type "
+                           << aidlDesc.type;
+            }
+        }
+    } else if (mHidlBase1_0) {
+        hidl_vec<c2_hidl::ParamIndex> indices(coreIndices.size());
+        for (size_t i = 0; i < coreIndices.size(); ++i) {
+            indices[i] = static_cast<c2_hidl::ParamIndex>(coreIndices[i]);
+        }
+        Return<void> transStatus = mHidlBase1_0->getStructDescriptors(
+                indices,
+                [&result](c2_hidl::Status status,
+                          const hidl_vec<c2_hidl::StructDescriptor>& descriptors) {
+                    if (status != c2_hidl::Status::OK && status != c2_hidl::Status::NOT_FOUND) {
+                        LOG(DEBUG) << "describeStructs -- HIDL call failed: "
+                                   << static_cast<c2_status_t>(status);
+                        return;
+                    }
+                    for (size_t i = 0; i < descriptors.size(); ++i) {
+                        std::unique_ptr<C2StructDescriptor> descriptor;
+                        if (c2_hidl::utils::objcpy(&descriptor, descriptors[i])) {
+                            result.emplace(
+                                    C2Param::CoreIndex(descriptor->coreIndex()).coreIndex(),
+                                    std::move(descriptor));
+                        } else {
+                            LOG(ERROR) << "describeStructs -- HIDL conversion failed at " << i;
+                        }
+                    }
+                });
+        if (!transStatus.isOk()) {
+            LOG(DEBUG) << "describeStructs -- HIDL transaction failed: "
+                       << transStatus.description();
+        }
+    }
+    return result;
+}
+
 std::vector<std::string> Codec2Client::CacheServiceNames() {
     std::vector<std::string> names;
 

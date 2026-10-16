@@ -113,6 +113,30 @@ std::string ReflectedParamUpdater::Dict::debugString(size_t indent_) const {
     return s.str();
 }
 
+class CachedParamReflector : public C2ParamReflector {
+public:
+    explicit CachedParamReflector(const std::shared_ptr<C2ParamReflector>& base) : mBase(base) {}
+
+    void put(C2Param::CoreIndex coreIndex, std::unique_ptr<C2StructDescriptor> descriptor) {
+        mCache.emplace(coreIndex.coreIndex(), std::move(descriptor));
+    }
+
+    std::unique_ptr<C2StructDescriptor> describe(C2Param::CoreIndex coreIndex) const override {
+        uint32_t key = coreIndex.coreIndex();
+        auto it = mCache.find(key);
+        if (it != mCache.end()) {
+            return it->second ? std::make_unique<C2StructDescriptor>(*it->second) : nullptr;
+        }
+        std::unique_ptr<C2StructDescriptor> descriptor = mBase->describe(coreIndex);
+        mCache.emplace(key, descriptor ? std::make_unique<C2StructDescriptor>(*descriptor) : nullptr);
+        return descriptor;
+    }
+
+private:
+    const std::shared_ptr<C2ParamReflector> mBase;
+    mutable std::map<uint32_t, std::unique_ptr<C2StructDescriptor>> mCache;
+};
+
 void ReflectedParamUpdater::addParamDesc(
         const std::shared_ptr<C2ParamReflector> &reflector,
         const std::vector<std::shared_ptr<C2ParamDescriptor>> &paramDescs) {
@@ -124,6 +148,33 @@ void ReflectedParamUpdater::addParamDesc(
             continue;
         }
         addParamDesc(desc, *structDesc, reflector, true /* markVendor */);
+    }
+}
+
+void ReflectedParamUpdater::addParamDesc(
+        const std::shared_ptr<C2ParamReflector>& reflector,
+        const std::vector<std::shared_ptr<C2ParamDescriptor>>& paramDescs,
+        const std::map<uint32_t, std::unique_ptr<C2StructDescriptor>>& structDescs) {
+    auto cachedReflector = std::make_shared<CachedParamReflector>(reflector);
+    for (const auto& [coreIndex, descriptor] : structDescs) {
+        cachedReflector->put(
+                C2Param::CoreIndex(coreIndex),
+                std::make_unique<C2StructDescriptor>(*descriptor));
+    }
+
+    for (const std::shared_ptr<C2ParamDescriptor>& desc : paramDescs) {
+        auto it = structDescs.find(desc->index().coreIndex());
+        if (it != structDescs.end()) {
+            addParamDesc(desc, *it->second, cachedReflector, true /* markVendor */);
+            continue;
+        }
+        std::unique_ptr<C2StructDescriptor> descriptor = cachedReflector->describe(
+                desc->index().coreIndex());
+        if (descriptor == nullptr) {
+            ALOGD("Could not describe %s", desc->name().c_str());
+            continue;
+        }
+        addParamDesc(desc, *descriptor, cachedReflector, true /* markVendor */);
     }
 }
 

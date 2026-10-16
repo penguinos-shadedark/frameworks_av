@@ -103,9 +103,11 @@ IOProfile::CompatibilityScore IOProfile::getCompatibilityScore(
             if (checkIdenticalAudioProfile(&config) != NO_ERROR) {
                 return result;
             }
-            result = EXACT_MATCH;
+            result =
+                    (flagsCompatibleScore == EXACT_MATCH) ? EXACT_MATCH : PARTIAL_MATCH_WITH_CONFIG;
         } else if (checkExactAudioProfile(&config) == NO_ERROR) {
-            result = EXACT_MATCH;
+            result =
+                    (flagsCompatibleScore == EXACT_MATCH) ? EXACT_MATCH : PARTIAL_MATCH_WITH_CONFIG;
         } else {
             return result;
         }
@@ -231,12 +233,12 @@ IOProfile::CompatibilityScore IOProfile::getFlagsCompatibleScore(
             getType() == AUDIO_PORT_TYPE_MIX && getRole() == AUDIO_PORT_ROLE_SINK;
     ALOG_ASSERT(isPlaybackThread != isRecordThread);
 
-    const uint32_t mustMatchOutputFlags =
-            AUDIO_OUTPUT_FLAG_DIRECT|AUDIO_OUTPUT_FLAG_HW_AV_SYNC|AUDIO_OUTPUT_FLAG_MMAP_NOIRQ
-            | additionalMandatoryFlags;
+    const uint32_t mustMatchOutputFlags = AUDIO_OUTPUT_FLAG_DIRECT | AUDIO_OUTPUT_FLAG_HW_AV_SYNC |
+                                          AUDIO_OUTPUT_FLAG_MMAP_NOIRQ | AUDIO_OUTPUT_FLAG_VOIP_RX |
+                                          additionalMandatoryFlags;
     if (isPlaybackThread &&
-        !audio_output_flags_is_subset((audio_output_flags_t)getFlags(),
-                                      (audio_output_flags_t)flags,
+        !audio_output_flags_is_subset(static_cast<audio_output_flags_t>(getFlags()),
+                                      static_cast<audio_output_flags_t>(flags),
                                       mustMatchOutputFlags)) {
         return NO_MATCH;
     }

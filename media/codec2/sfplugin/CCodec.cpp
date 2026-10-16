@@ -1325,7 +1325,7 @@ void CCodec::allocate(const sp<MediaCodecInfo> &codecInfo) {
     // initialize config here in case setParameters is called prior to configure
     Mutexed<std::unique_ptr<Config>>::Locked configLocked(mConfig);
     const std::unique_ptr<Config> &config = *configLocked;
-    status_t err = config->initialize(mClient->getParamReflector(), comp);
+    status_t err = config->initialize(mClient->getParamReflector(), comp, mClient.get());
     if (err != OK) {
         ALOGW("Failed to initialize configuration support");
         // TODO: report error once we complete implementation.

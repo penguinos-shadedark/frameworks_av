@@ -1084,7 +1084,8 @@ void CCodecConfig::initializeStandardParams() {
 
 status_t CCodecConfig::initialize(
         const std::shared_ptr<C2ParamReflector> &reflector,
-        const std::shared_ptr<Codec2Client::Configurable> &configurable) {
+        const std::shared_ptr<Codec2Client::Configurable> &configurable,
+        Codec2Client *codec2Client) {
     C2ComponentDomainSetting domain(C2Component::DOMAIN_OTHER);
     C2ComponentKindSetting kind(C2Component::KIND_OTHER);
 
@@ -1165,7 +1166,23 @@ status_t CCodecConfig::initialize(
         mParamUpdater->supportWholeParam(
                 C2_PARAMKEY_QP_OFFSET_RECTS, C2StreamQpOffsetRects::CORE_INDEX);
     }
-    mParamUpdater->addParamDesc(mReflector, mParamDescs);
+    if (codec2Client) {
+        std::vector<uint32_t> coreIndices;
+        coreIndices.reserve(mParamDescs.size());
+        for (const auto& desc : mParamDescs) {
+            coreIndices.push_back(desc->index().coreIndex());
+        }
+        auto structDescs = codec2Client->describeStructs(coreIndices);
+        if (structDescs.empty() && !coreIndices.empty()) {
+            ALOGD("Batch describeStructs returned no descriptors for %zu indices; "
+                  "falling back to per-index reflection", coreIndices.size());
+            mParamUpdater->addParamDesc(mReflector, mParamDescs);
+        } else {
+            mParamUpdater->addParamDesc(mReflector, mParamDescs, structDescs);
+        }
+    } else {
+        mParamUpdater->addParamDesc(mReflector, mParamDescs);
+    }
 
     // TEMP: add some standard fields even if not reflected
     if (kind.value == C2Component::KIND_ENCODER) {

@@ -41,6 +41,8 @@
 #include <audio_utils/Statistics.h>
 #include <cpustats/ThreadCpuUsage.h>
 #endif
+#include <audio_utils/audio_channel_mask_utils.h>
+#include <audio_utils/audio_pcm_format_utils.h>
 #include <audio_utils/channels.h>
 #include <audio_utils/clock.h>
 #include <audio_utils/format.h>
@@ -304,56 +306,23 @@ static bool isWatch() {
 // Set kEnableExtendedChannels to true to enable greater than stereo output
 // for the MixerThread and device sink.  Number of channels allowed is
 // FCC_2 <= channels <= FCC_LIMIT.
-constexpr bool kEnableExtendedChannels = true;
+using audio_utils::kEnableExtendedChannels;
 
 // Returns true if channel mask is permitted for the PCM sink in the MixerThread
 /* static */
 bool IAfThreadBase::isValidPcmSinkChannelMask(audio_channel_mask_t channelMask) {
-    switch (audio_channel_mask_get_representation(channelMask)) {
-    case AUDIO_CHANNEL_REPRESENTATION_POSITION: {
-        // Haptic channel mask is only applicable for channel position mask.
-        const uint32_t channelCount = audio_channel_count_from_out_mask(
-                static_cast<audio_channel_mask_t>(channelMask & ~AUDIO_CHANNEL_HAPTIC_ALL));
-        const uint32_t maxChannelCount = kEnableExtendedChannels
-                ? FCC_LIMIT : FCC_2;
-        if (channelCount < FCC_2 // mono is not supported at this time
-                || channelCount > maxChannelCount) {
-            return false;
-        }
-        // check that channelMask is the "canonical" one we expect for the channelCount.
-        return audio_channel_position_mask_is_out_canonical(channelMask);
-        }
-    case AUDIO_CHANNEL_REPRESENTATION_INDEX:
-        if (kEnableExtendedChannels) {
-            const uint32_t channelCount = audio_channel_count_from_out_mask(channelMask);
-            if (channelCount >= FCC_2 // mono is not supported at this time
-                    && channelCount <= FCC_LIMIT) {
-                return true;
-            }
-        }
-        return false;
-    default:
-        return false;
-    }
+    const uint32_t maxChannelCount = kEnableExtendedChannels ? FCC_LIMIT : FCC_2;
+    return audio_utils::isMixerCompatibleChannelMask(
+            channelMask, FCC_2, maxChannelCount, kEnableExtendedChannels);
 }
 
 // Set kEnableExtendedPrecision to true to use extended precision in MixerThread
-constexpr bool kEnableExtendedPrecision = true;
+using audio_utils::kEnableExtendedPrecision;
 
 // Returns true if format is permitted for the PCM sink in the MixerThread
 /* static */
 bool IAfThreadBase::isValidPcmSinkFormat(audio_format_t format) {
-    switch (format) {
-    case AUDIO_FORMAT_PCM_16_BIT:
-        return true;
-    case AUDIO_FORMAT_PCM_FLOAT:
-    case AUDIO_FORMAT_PCM_24_BIT_PACKED:
-    case AUDIO_FORMAT_PCM_32_BIT:
-    case AUDIO_FORMAT_PCM_8_24_BIT:
-        return kEnableExtendedPrecision;
-    default:
-        return false;
-    }
+    return audio_utils::isMixerValidPcmSinkFormat(format);
 }
 
 // ----------------------------------------------------------------------------

@@ -1597,6 +1597,140 @@ TEST_F(AudioPolicyManagerTestWithConfigurationFile, SelectMMapOffloadOnlyWhenReq
                                                            "", "", AUDIO_FORMAT_DEFAULT));
 }
 
+TEST_F(AudioPolicyManagerTestWithConfigurationFile,
+       VoiceCommunicationStandardRoutingSelectsVoipRx) {
+    const audio_attributes_t voiceCommAttr = {
+            .content_type = AUDIO_CONTENT_TYPE_SPEECH,
+            .usage = AUDIO_USAGE_VOICE_COMMUNICATION,
+    };
+    audio_io_handle_t output = AUDIO_IO_HANDLE_NONE;
+    audio_port_handle_t portId = AUDIO_PORT_HANDLE_NONE;
+    DeviceIdVector selectedDeviceIds = {};
+    ASSERT_NO_FATAL_FAILURE(getOutputForAttr(
+            &selectedDeviceIds, AUDIO_FORMAT_PCM_16_BIT, AUDIO_CHANNEL_OUT_STEREO,
+            k48000SamplingRate, AUDIO_OUTPUT_FLAG_NONE, &output, &portId, voiceCommAttr));
+    EXPECT_NE(AUDIO_IO_HANDLE_NONE, output)
+            << "Expected valid output handle for voice communication";
+    sp<SwAudioOutputDescriptor> outDesc = mManager->getOutputs().valueFor(output);
+    ASSERT_NE(nullptr, outDesc.get()) << "Expected valid output descriptor for handle " << output;
+    EXPECT_TRUE((outDesc->getFlags().output & AUDIO_OUTPUT_FLAG_VOIP_RX) != 0)
+            << "Expected AUDIO_OUTPUT_FLAG_VOIP_RX in output flags: 0x" << std::hex
+            << outDesc->getFlags().output;
+    mManager->releaseOutput(portId);
+}
+
+TEST_F(AudioPolicyManagerTestWithConfigurationFile,
+       VoiceCommunicationMmapRoutingWithoutVoipMmapProfileRejectsMmap) {
+    ASSERT_EQ(NO_ERROR, mManager->setDeviceConnectionState(AUDIO_DEVICE_OUT_USB_DEVICE,
+                                                           AUDIO_POLICY_DEVICE_STATE_AVAILABLE, "",
+                                                           "", AUDIO_FORMAT_DEFAULT));
+
+    auto devices = mManager->getAvailableOutputDevices();
+    audio_port_handle_t usbPortId = AUDIO_PORT_HANDLE_NONE;
+    for (auto device : devices) {
+        if (device->type() == AUDIO_DEVICE_OUT_USB_DEVICE) {
+            usbPortId = device->getId();
+            break;
+        }
+    }
+    ASSERT_NE(AUDIO_PORT_HANDLE_NONE, usbPortId) << "Expected USB output device to be present";
+
+    audio_attributes_t voiceCommAttr = {
+            .content_type = AUDIO_CONTENT_TYPE_SPEECH,
+            .usage = AUDIO_USAGE_VOICE_COMMUNICATION,
+    };
+    audio_stream_type_t stream = AUDIO_STREAM_DEFAULT;
+    audio_config_t config = AUDIO_CONFIG_INITIALIZER;
+    config.sample_rate = k48000SamplingRate;
+    config.channel_mask = AUDIO_CHANNEL_OUT_STEREO;
+    config.format = AUDIO_FORMAT_PCM_16_BIT;
+    audio_output_flags_t flags = static_cast<audio_output_flags_t>(AUDIO_OUTPUT_FLAG_DIRECT |
+                                                                   AUDIO_OUTPUT_FLAG_MMAP_NOIRQ);
+    audio_io_handle_t output = AUDIO_IO_HANDLE_NONE;
+    audio_port_handle_t portId = AUDIO_PORT_HANDLE_NONE;
+    AudioPolicyInterface::output_type_t outputType;
+    bool isSpatialized = false;
+    bool isBitPerfect = false;
+    DeviceIdVector selectedDeviceIds = {usbPortId};
+    AttributionSourceState attributionSource = createAttributionSourceState(/*uid=*/0);
+
+    // Direct/MMAP open for voice communication fails when no dedicated voip_mmap profile exists
+    // (generic mmap_no_irq_out is rejected because VOIP_RX is mandatory).
+    status_t status =
+            mManager->getOutputForAttr(&voiceCommAttr, &output, AUDIO_SESSION_NONE, &stream,
+                                       attributionSource, &config, &flags, &selectedDeviceIds,
+                                       &portId, {}, &outputType, &isSpatialized, &isBitPerfect);
+    EXPECT_NE(OK, status)
+            << "Expected getOutputForAttr to fail MMAP open without dedicated voip_mmap profile";
+
+    if (portId != AUDIO_PORT_HANDLE_NONE) {
+        mManager->releaseOutput(portId);
+    }
+    ASSERT_EQ(NO_ERROR, mManager->setDeviceConnectionState(AUDIO_DEVICE_OUT_USB_DEVICE,
+                                                           AUDIO_POLICY_DEVICE_STATE_UNAVAILABLE,
+                                                           "", "", AUDIO_FORMAT_DEFAULT));
+}
+
+TEST_F(AudioPolicyManagerTestWithConfigurationFile, VoipTxInputCaptureRouting) {
+    audio_attributes_t voiceCommAttr = {.content_type = AUDIO_CONTENT_TYPE_UNKNOWN,
+                                        .usage = AUDIO_USAGE_UNKNOWN,
+                                        .source = AUDIO_SOURCE_VOICE_COMMUNICATION,
+                                        .flags = AUDIO_FLAG_NONE,
+                                        .tags = ""};
+    audio_io_handle_t input = AUDIO_IO_HANDLE_NONE;
+    audio_port_handle_t portId = AUDIO_PORT_HANDLE_NONE;
+    audio_port_handle_t selectedDeviceId = AUDIO_PORT_HANDLE_NONE;
+    audio_input_flags_t flags = AUDIO_INPUT_FLAG_NONE;
+
+    ASSERT_NO_FATAL_FAILURE(getInputForAttr(voiceCommAttr, &input, AUDIO_SESSION_NONE, /*riid=*/1,
+                                            &selectedDeviceId, AUDIO_FORMAT_PCM_16_BIT,
+                                            AUDIO_CHANNEL_IN_MONO, 16000, flags, &portId));
+
+    EXPECT_NE(AUDIO_IO_HANDLE_NONE, input)
+            << "Expected valid input handle for voice communication capture";
+    sp<AudioInputDescriptor> inDesc = mManager->getInputs().valueFor(input);
+    ASSERT_NE(nullptr, inDesc.get()) << "Expected valid input descriptor for handle " << input;
+    EXPECT_TRUE((inDesc->getFlags().input & AUDIO_INPUT_FLAG_VOIP_TX) != 0)
+            << "Expected AUDIO_INPUT_FLAG_VOIP_TX in input flags: 0x" << std::hex
+            << inDesc->getFlags().input;
+
+    if (portId != AUDIO_PORT_HANDLE_NONE) {
+        mManager->releaseInput(portId);
+    }
+}
+
+TEST_F(AudioPolicyManagerTestWithConfigurationFile, NonLinearPcmVoiceCallDoesNotSetVoipFlags) {
+    audio_attributes_t voiceCommAttr = {
+            .content_type = AUDIO_CONTENT_TYPE_SPEECH,
+            .usage = AUDIO_USAGE_VOICE_COMMUNICATION,
+    };
+    audio_stream_type_t stream = AUDIO_STREAM_DEFAULT;
+    audio_config_t config = AUDIO_CONFIG_INITIALIZER;
+    config.sample_rate = k48000SamplingRate;
+    config.channel_mask = AUDIO_CHANNEL_OUT_STEREO;
+    config.format = AUDIO_FORMAT_MP3;
+    audio_output_flags_t flags = static_cast<audio_output_flags_t>(
+            AUDIO_OUTPUT_FLAG_DIRECT | AUDIO_OUTPUT_FLAG_COMPRESS_OFFLOAD);
+    audio_io_handle_t output = AUDIO_IO_HANDLE_NONE;
+    audio_port_handle_t portId = AUDIO_PORT_HANDLE_NONE;
+    AudioPolicyInterface::output_type_t outputType;
+    bool isSpatialized = false;
+    bool isBitPerfect = false;
+    DeviceIdVector selectedDeviceIds = {};
+    AttributionSourceState attributionSource = createAttributionSourceState(/*uid=*/0);
+
+    (void)mManager->getOutputForAttr(&voiceCommAttr, &output, AUDIO_SESSION_NONE, &stream,
+                                     attributionSource, &config, &flags, &selectedDeviceIds,
+                                     &portId, {}, &outputType, &isSpatialized, &isBitPerfect);
+
+    EXPECT_EQ(0, flags & AUDIO_OUTPUT_FLAG_VOIP_RX)
+            << "Expected VOIP_RX flag not to be set for non-linear PCM voice call, got flags: 0x"
+            << std::hex << flags;
+
+    if (portId != AUDIO_PORT_HANDLE_NONE) {
+        mManager->releaseOutput(portId);
+    }
+}
 
 TEST_F(AudioPolicyManagerTestWithConfigurationFile,
        MMapOffloadMutuallyExclusive) {

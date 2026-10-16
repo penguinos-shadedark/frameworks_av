@@ -60,6 +60,7 @@
 #include <gui/DisplayEventReceiver.h>
 #include <utils/Looper.h>
 
+#include <android-base/properties.h>
 #include <android-base/stringprintf.h>
 using ::android::base::StringPrintf;
 
@@ -1596,7 +1597,9 @@ bool NuPlayer::Decoder::shouldEnableVsyncForVideo(
 void NuPlayer::Decoder::initializeVsyncCallbacks() {
     // Check property to enable VSync mode
     bool enableVsync = property_get_bool("debug.nuplayer.vsync_mode", true);
-    if (!enableVsync) {
+    constexpr int32_t kAndroidApi202604 = 202604;
+    int32_t vendorVersion = ::android::base::GetIntProperty<int32_t>("ro.vendor.api_level", -1);
+    if (!enableVsync || (vendorVersion < kAndroidApi202604)) {
         return;
     }
     // Create DisplayEventReceiver for VSync events

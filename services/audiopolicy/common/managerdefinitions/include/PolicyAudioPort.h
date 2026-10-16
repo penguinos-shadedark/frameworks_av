@@ -82,8 +82,6 @@ public:
                           audio_channel_mask_t &channelMask,
                           audio_format_t &format) const;
 
-    static const audio_format_t sPcmFormatCompareTable[];
-
     static int compareFormats(audio_format_t format1, audio_format_t format2);
 
     // Used to select an audio HAL output stream with a sample format providing the

@@ -83,6 +83,11 @@ public:
             const std::shared_ptr<C2ParamReflector> &reflector,
             const std::vector<std::shared_ptr<C2ParamDescriptor>> &paramDescs);
 
+    void addParamDesc(
+            const std::shared_ptr<C2ParamReflector> &reflector,
+            const std::vector<std::shared_ptr<C2ParamDescriptor>> &paramDescs,
+            const std::map<uint32_t, std::unique_ptr<C2StructDescriptor>> &structDescs);
+
     /**
      * Adds fields of a standard parameter (that may not be supported by the parameter reflector
      * or may not be listed as a supported value by the component). If the parameter name is

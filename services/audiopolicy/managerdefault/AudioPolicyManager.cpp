@@ -1540,6 +1540,7 @@ sp<IOProfile> AudioPolicyManager::searchCompatibleProfileHwModules (
     sp<IOProfile> directOnlyProfile = nullptr;
     sp<IOProfile> compressOffloadProfile = nullptr;
     sp<IOProfile> profile = nullptr;
+    IOProfile::CompatibilityScore bestScore = IOProfile::NO_MATCH;
     uint32_t additionalMandatoryFlags = 0;
     if ((flags & AUDIO_OUTPUT_FLAG_MMAP_NOIRQ) != 0) {
         // For mmap, only select mmap offload if offload is explicitly requested.
@@ -1547,39 +1548,42 @@ sp<IOProfile> AudioPolicyManager::searchCompatibleProfileHwModules (
     }
     for (const auto& hwModule : hwModules) {
         for (const auto& curProfile : hwModule->getOutputProfiles()) {
-             if (curProfile->getCompatibilityScore(devices,
-                     samplingRate, NULL /*updatedSamplingRate*/,
-                     format, NULL /*updatedFormat*/,
-                     channelMask, NULL /*updatedChannelMask*/,
-                     flags, additionalMandatoryFlags) == IOProfile::NO_MATCH) {
-                 continue;
-             }
-             // reject profiles not corresponding to a device currently available
-             if (!mAvailableOutputDevices.containsAtLeastOne(curProfile->getRoutableDevices())) {
-                 continue;
-             }
-             // reject profiles if connected device does not support codec
-             if (!curProfile->devicesSupportEncodedFormats(devices.types())) {
-                 continue;
-             }
-             if (hwModule->isAnyMutuallyExclusiveProfileOpened(curProfile)) {
-                 ALOGD("%s ignore %s as there is a mutually exclusive profile active",
-                       __func__, curProfile->getName().c_str());
-                 continue;
-             }
-             if (!directOnly) {
+            const auto score = curProfile->getCompatibilityScore(
+                    devices, samplingRate, NULL /*updatedSamplingRate*/, format,
+                    NULL /*updatedFormat*/, channelMask, NULL /*updatedChannelMask*/, flags,
+                    additionalMandatoryFlags);
+            if (score == IOProfile::NO_MATCH) {
+                continue;
+            }
+            // reject profiles not corresponding to a device currently available
+            if (!mAvailableOutputDevices.containsAtLeastOne(curProfile->getRoutableDevices())) {
+                continue;
+            }
+            // reject profiles if connected device does not support codec
+            if (!curProfile->devicesSupportEncodedFormats(devices.types())) {
+                continue;
+            }
+            if (hwModule->isAnyMutuallyExclusiveProfileOpened(curProfile)) {
+                ALOGD("%s ignore %s as there is a mutually exclusive profile active", __func__,
+                      curProfile->getName().c_str());
+                continue;
+            }
+            if (!directOnly) {
                 return curProfile;
-             }
+            }
 
-             profile = curProfile;
-             if ((flags == AUDIO_OUTPUT_FLAG_DIRECT) &&
-                 curProfile->getFlags() == AUDIO_OUTPUT_FLAG_DIRECT) {
-                 directOnlyProfile = curProfile;
-             }
+            if (score >= bestScore) {
+                profile = curProfile;
+                bestScore = score;
+            }
+            if ((flags == AUDIO_OUTPUT_FLAG_DIRECT) &&
+                curProfile->getFlags() == AUDIO_OUTPUT_FLAG_DIRECT) {
+                directOnlyProfile = curProfile;
+            }
 
-             if ((curProfile->getFlags() & AUDIO_OUTPUT_FLAG_COMPRESS_OFFLOAD) != 0) {
-                 compressOffloadProfile = curProfile;
-             }
+            if ((curProfile->getFlags() & AUDIO_OUTPUT_FLAG_COMPRESS_OFFLOAD) != 0) {
+                compressOffloadProfile = curProfile;
+            }
         }
     }
 
@@ -2069,6 +2073,7 @@ status_t AudioPolicyManager::openDirectOutput(audio_stream_type_t stream,
                 ALOGI("%s reusing direct output %d for session %d", __func__,
                     mOutputs.keyAt(i), session);
                 *output = mOutputs.keyAt(i);
+                *flags = desc->getFlags().output;
                 return NO_ERROR;
             }
         }
@@ -2113,6 +2118,10 @@ status_t AudioPolicyManager::openDirectOutput(audio_stream_type_t stream,
     // An MSD patch may be using the only output stream that can service this request. Release
     // all MSD patches to prioritize this request over any active output on MSD.
     releaseMsdOutputPatches(devices);
+
+    if ((profile->getFlags() & AUDIO_OUTPUT_FLAG_VOIP_RX) == 0) {
+        directFlags = static_cast<audio_output_flags_t>(directFlags & ~AUDIO_OUTPUT_FLAG_VOIP_RX);
+    }
 
     status_t status =
             outputDesc->open(config, nullptr /* mixerConfig */, devices, stream, &directFlags,
@@ -2244,24 +2253,17 @@ audio_io_handle_t AudioPolicyManager::getOutputForDevices(
     }
     if (stream == AUDIO_STREAM_TTS) {
         *flags = AUDIO_OUTPUT_FLAG_TTS;
-// QTI_BEGIN: 2021-11-15: Audio: Select low latency path during voice call for voice stream
-    } else if ((stream == AUDIO_STREAM_VOICE_CALL &&
-// QTI_END: 2021-11-15: Audio: Select low latency path during voice call for voice stream
+    } else if (stream == AUDIO_STREAM_VOICE_CALL &&
                audio_is_linear_pcm(config->format) &&
-// QTI_BEGIN: 2021-11-15: Audio: Select low latency path during voice call for voice stream
-               (*flags & AUDIO_OUTPUT_FLAG_INCALL_MUSIC) == 0) &&
-               (mEngine->getPhoneState() != AUDIO_MODE_IN_CALL)) {
-// QTI_END: 2021-11-15: Audio: Select low latency path during voice call for voice stream
-        // TODO b/418144806: define a proper routing policy when multiple output profiles
-        // can be used for voice communication use case.
-        if (*flags & AUDIO_OUTPUT_FLAG_MMAP_NOIRQ) {
-            ALOGV("MMAP flag set, ignoring VoIP & direct output flags");
-        } else {
-            *flags = (audio_output_flags_t)(AUDIO_OUTPUT_FLAG_VOIP_RX |
-                                           AUDIO_OUTPUT_FLAG_DIRECT);
-            ALOGV("Set VoIP and Direct output flags for PCM format");
+               (*flags & AUDIO_OUTPUT_FLAG_INCALL_MUSIC) == 0) {
+        // Voice communication stream requires VOIP_RX. DIRECT is added for non-MMAP streams.
+        *flags = (audio_output_flags_t)(*flags | AUDIO_OUTPUT_FLAG_VOIP_RX);
+        if ((*flags & AUDIO_OUTPUT_FLAG_MMAP_NOIRQ) == 0) {
+            *flags = (audio_output_flags_t)(*flags | AUDIO_OUTPUT_FLAG_DIRECT);
         }
+        ALOGV("%s: set VoIP output flag for PCM voice call format", __func__);
     }
+
     // Attach the Ultrasound flag for the AUDIO_CONTENT_TYPE_ULTRASOUND
     if (attr->content_type == AUDIO_CONTENT_TYPE_ULTRASOUND) {
         *flags = (audio_output_flags_t)(*flags | AUDIO_OUTPUT_FLAG_ULTRASOUND);
